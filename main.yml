@@ -1,0 +1,297 @@
+# Unifi Controller RPi3B+ Install Script
+
+# Most taken from https://withblue.ink/2020/06/24/docker-and-docker-compose-on-raspberry-pi-os.html and ported into ansible playbook
+
+### TODO - Review https://github.com/vicchi/ansible-pi-lockdown and see if can be used. 
+
+---
+# Guidance for these stages taken from https://gist.github.com/Pristavkin/249138d7304f8298e95d1487fc011e8a
+- name: Secure Access 1/1 - Enable SSH login via root (temporally) and disable auto logins
+  hosts: all
+  connection: paramiko_ssh
+  become: yes
+  gather_facts: no
+
+  vars:
+    ansible_user: pi
+    ansible_ssh_pass: raspberry
+    perform_initial: "{{ perform_initial_root_config }}"
+
+  tasks:
+  - name: Ensure ansible key is in /root/.ssh/authorized_keys
+    authorized_key:
+      user: root
+      state: present
+      key: https://danstreeter.co.uk/keys/ansible.txt
+      validate_certs: False
+    when:
+      perform_initial == "yes"
+
+    # https://github.com/giuaig/ansible-raspi-config/blob/master/raspi-config.yml
+    #B1 Desktop / CLI
+  - name: Get boot CLI
+    shell: "raspi-config nonint get_boot_cli"
+    register: boot_cli
+    changed_when: False
+    when:
+      perform_initial == "yes"
+
+  #B1 cli, B2 cli autologin, B3 desktop, B4 desktop autologin
+  - name: Set Boot behaviour to cli (no autologin)
+    shell: "raspi-config nonint do_boot_behaviour B1"
+    when:
+      (perform_initial == "yes") and (boot_cli.stdout != 0)
+
+  - name: Reboot, and wait to come back online
+    reboot:
+    when:
+      (perform_initial == "yes") and (boot_cli.stdout != 0)
+
+############################################################
+
+- name: Secure Access 2/2 - Change default username, password, add keys, re-restrict root login
+  hosts: all 
+  connection: ssh
+  become: no
+  gather_facts: no
+
+  vars_prompt:
+    - name: "new_password"
+      prompt: "New account password (note this is always asked, even if skipped later, so check if the password was actually changed))"
+      private: yes
+      encrypt: "sha512_crypt"
+      confirm: yes
+
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ ansible_ssh_priv_path }}"
+    new_user: "{{ target_username }}"
+    new_group: "{{ target_username }}"
+    new_password: "{{ new_password }}"
+
+
+  tasks:
+  - name: Check if pi user exists
+    command: id -un pi
+    register: piuser
+    ignore_errors: yes
+
+  - name: kill all running pi user processes
+    shell: pkill -9 -u pi
+    ignore_errors: yes
+    when:
+      piuser.rc == 0
+
+  - name: get default group name for pi user
+    command: id -gn pi
+    register: pigroup
+    when:
+      piuser.rc == 0
+
+  - name: rename pi group
+    command: groupmod -n '{{ new_group }}' '{{ pigroup.stdout }}'
+    when:
+      (piuser.rc == 0 and pigroup.stdout != new_group)
+
+  - name: rename pi user
+    command: usermod -l '{{ new_user }}' -d /home/'{{ new_user }}' -m pi
+    when:
+      piuser.rc == 0
+
+  - name: set new password
+    user:
+      name: '{{ new_user }}'
+      password: '{{ new_password }}'
+    when:
+      piuser.rc == 0
+
+  # TODO - Make the key a variable and loop rather than perform x tasks
+  - name: Add master key to authorized_keys
+    authorized_key:
+      user: "{{ new_user }}"
+      state: present
+      key: https://danstreeter.co.uk/keys/master.txt
+      validate_certs: False
+    when:
+      piuser.rc == 0
+
+  # TODO - Make the key a variable and loop rather than perform x tasks
+  - name: Add ansible key to authorized_keys
+    authorized_key:
+      user: "{{ new_user }}"
+      state: present
+      key: https://danstreeter.co.uk/keys/ansible.txt
+      validate_certs: False
+    when:
+      piuser.rc == 0
+
+  # TODO - Make the key a variable and loop rather than perform x tasks
+  - name: Add backup daemon key to authorized_keys
+    authorized_key:
+      user: "{{ new_user }}"
+      state: present
+      key: https://danstreeter.co.uk/keys/backup_daemon.txt
+      validate_certs: False
+    when:
+      piuser.rc == 0
+
+  - name: Creating sudoers.d file to allow passwordless sudo
+    copy:
+      dest: "/etc/sudoers.d/{{ new_user }}"
+      content: "{{ new_user }} ALL=(ALL) NOPASSWD: ALL"
+      mode: 0644
+
+  # TODO - Make the key a variable and loop rather than perform x tasks
+  - name: Ensure ansible key is absent from /root/.ssh/authorized_keys
+    authorized_key:
+      user: root
+      state: absent
+      key: https://danstreeter.co.uk/keys/ansible.txt
+      validate_certs: False
+
+############################################################
+
+- name: Configure Raspberry Pi
+  hosts: all
+  become: yes
+  connection: ssh
+
+  vars:
+    ansible_user: "{{ target_username }}"
+    ansible_ssh_private_key_file: "{{ ansible_ssh_priv_path }}"
+
+  roles:
+  - { role: rpi_boot_config, boot_config_lines: ['gpu_mem=16', 'dtoverlay=disable-wifi', 'dtoverlay=disable-bt'] } # https://github.com/infothrill/ansible-role-rpi_boot_config
+
+  # Could possibly also be done by the raspi-config nonint method
+  tasks:
+  - name: Set the hostname
+    command: hostnamectl set-hostname "{{ target_hostname }}"
+
+  - name: Update /etc/hosts with new hostname
+    lineinfile:
+      dest: /etc/hosts
+      regexp: "^127.0.1.1\\s+raspberrypi$"
+      line: "127.0.1.1\t{{ target_hostname }}"
+      state: present
+
+  - name: Disable SSH password authentication
+    lineinfile:
+      dest: /etc/ssh/sshd_config
+      regexp: "^PasswordAuthentication|^#PasswordAuthentication"
+      line: "PasswordAuthentication no"
+      state: present
+
+  - name: Disable root SSH Login
+    lineinfile:
+      dest: /etc/ssh/sshd_config
+      regexp: "^PermitRootLogin|^#PermitRootLogin"
+      line: "PermitRootLogin no"
+      state: present
+
+  - name: Restart SSHD service
+    systemd:
+      state: restarted
+      name: sshd
+
+  - name: Upgrade Installed Apt Software
+    apt:
+      update_cache: yes
+      upgrade: yes
+
+  - name: Install Vim
+    apt:
+      name: vim
+      state: present
+      update_cache: yes
+
+  - name: Install Docker Pre-Reqs
+    apt:
+      state: present
+      pkg:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - gnupg2
+        - software-properties-common
+
+  # Not needed as is alreeady found in ansible_facts.lsb.id
+  # - name: Get release ID
+  #   shell: . /etc/os-release; echo "$ID"
+  #   register: os_release_id
+
+  - name: Get DPKG Architecture
+    shell: dpkg --print-architecture
+    register: dpkg_architecture
+
+  # Not needed as is alreeady found in ansible_facts.lsb.codename
+  # - name: Get lsb_release
+  #   shell: lsb_release -cs
+  #   register: lsb_release
+
+  - name: Set dpkg_architecture to fact
+    set_fact:
+      cacheable: yes
+      dpkg_architecture: "{{ dpkg_architecture.stdout }}"
+
+  - name: Add Docker signing key
+    apt_key:
+      url: "https://download.docker.com/linux/{{ ansible_facts.lsb.id|lower }}/gpg"
+      state: present
+
+  - name: Add Docker official repos
+    apt_repository:
+      repo: "deb [arch={{ ansible_facts.dpkg_architecture }}] https://download.docker.com/linux/{{ ansible_facts.lsb.id|lower }} {{ ansible_facts.lsb.codename }} stable"
+      state: present
+      filename: docker
+      update_cache: yes
+
+  - name: Install Docker CE
+    apt:
+      state: present
+      pkg:
+        - docker-ce
+        - cgroupfs-mount
+      install_recommends: no
+      update_cache: yes
+
+  - name: Make sure a Docker is running
+    systemd:
+      state: started
+      name: docker
+
+  - name: Add my user to the docker group
+    user:
+      name: "{{ ansible_user }}"
+      groups: docker
+      append: yes
+
+  - name: Download docker-compose
+    get_url:
+      # v2.2.2 is statically defined here, dynamic latest version available from `curl https://api.github.com/repos/docker/compose/releases/latest` if parsed and cut.
+      url: "https://github.com/docker/compose/releases/download/v2.2.2/docker-compose-{{ ansible_facts.system|lower }}-{{ ansible_facts.architecture }}" # linux-aarch64
+      dest: /usr/local/bin/docker-compose
+      mode: 0755
+
+  - name: Creating compose alias to docker-compose
+    copy:
+      dest: /etc/profile.d/00-compose-alias.sh
+      content: alias compose=docker-compose
+      mode: 0644
+
+  - name: Configure static IP in /etc/dhcpcd.conf (Skipped by when 1=2)
+    lineinfile:
+      dest:  /etc/dhcpcd.conf
+      regexp: "{{ item.regexp }}"
+      line: "{{ item.line }}"
+      state: present
+    with_items:
+      - { regexp: "^interface eth[0-9]$", line: "interface {{ ansible_facts.default_ipv4.interface }}" }
+      - { regexp: "^static ip_address", line: "static ip_address=192.168.1.97/24" }
+      - { regexp: "^static routers", line: "static routers=192.168.1.1" }
+      - { regexp: "^static domain_name_servers", line: "static domain_name_servers=192.168.1.1 8.8.8.8" }
+    when:
+      (1 == 2)
+
+  - name: Final Reboot
+    reboot:

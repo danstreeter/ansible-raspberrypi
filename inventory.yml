@@ -1,0 +1,11 @@
+all:
+  hosts:
+    ransible:
+      # Connection Details
+      ansible_host: 192.168.1.230
+      # Vars
+      target_hostname: ransible
+      target_username: dan
+      ansible_ssh_priv_path: ~/.ssh/ansible/id_rsa
+      # Toggles
+      perform_initial_root_config: "yes" # Toggle this to "no" once you have initially provisioned the node

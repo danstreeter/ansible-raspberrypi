@@ -1,0 +1,3 @@
+[submodule "roles/rpi_boot_config"]
+	path = roles/rpi_boot_config
+	url = git@github.com:infothrill/ansible-role-rpi_boot_config.git
