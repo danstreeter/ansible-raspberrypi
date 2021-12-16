@@ -14,7 +14,9 @@ Created to simplify home 64bit UnifiController raspi setup from a cold SD Card b
 ## Important considerations / TODO's
 
 There is still some static key imports within the `main.yml` file (look for `authorized_key` tasks) that I need to make variable and loop.
-These will need changing for your own configuration, or removing if y
+These will need changing for your own configuration, or removing if you do you do not want more than one.
+
+**Bear in mind however you will want at least one key added to the account as the playbook also disables SSH Password authentication**
 
 The variables within `inventory.yml` will need to be configured for your needs.
 
