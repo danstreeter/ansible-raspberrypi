@@ -1,8 +1,13 @@
 # Ansible Raspi Provisoner
 
-Provisions a raspberry pi with docker and docker-compose.
+Configures a Raspberry Pi with the following:
+- Renames the default pi user
+- Installs specific SSH keys on new user account
+- Updates & Upgrades apt
+- Installs docker and docker-compose
+- Hardens root user so cannot login
 
-Created to simplify home 64bit UnifiController raspi setup from a cold SD Card burn of the 64 bit images available on https://downloads.raspberrypi.org/raspios_arm64/images/.
+Created to simplify home 64bit UnifiController raspi setup from a cold SD Card burn of the 64 bit images available on https://downloads.raspberrypi.org/raspios_arm64/images/ to a point that it is now useful and ready for project customisation.
 
 ---
 
